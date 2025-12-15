@@ -1,22 +1,66 @@
-name: Test – Issue → e-mail
+name: Test-issue email
 
 on:
   workflow_dispatch:
 
 jobs:
-  test:
+  check:
     runs-on: ubuntu-latest
     permissions:
       issues: write
+      contents: read
 
     steps:
-      - name: Utwórz testowe Issue
+      - uses: actions/checkout@v4
+
+      - name: Sprawdź raporty GPW i utwórz Issue
         uses: actions/github-script@v7
         with:
           script: |
-            github.rest.issues.create({
+            const fs = require('fs');
+
+            // === 1. Wczytaj listę spółek z CSV ===
+            const csv = fs.readFileSync('spolki.csv', 'utf8');
+            const lines = csv.split('\n').slice(1);
+            const spolki = lines.map(l => l.trim()).filter(Boolean);
+
+            console.log('SPÓŁKI Z CSV:', spolki);
+
+            // === 2. Pobierz stronę GPW ===
+            const res = await fetch('https://www.gpw.pl/komunikaty');
+            const html = await res.text();
+
+            // === 3. Znajdź pierwszy link PDF ===
+            const match = html.match(/href="([^"]+\.pdf)"/);
+            if (!match) {
+              console.log('Brak raportów PDF');
+              return;
+            }
+
+            const pdfUrl = match[1];
+            console.log('Znaleziony PDF:', pdfUrl);
+
+            // === 4. Sprawdź, czy dotyczy spółki z CSV ===
+            const found = spolki.find(s =>
+              pdfUrl.toLowerCase().includes(
+                s.replace(/\s+/g, '').toLowerCase()
+              )
+            );
+
+            if (!found) {
+              console.log('Raport nie dotyczy spółek z listy');
+              return;
+            }
+
+            // === 5. Utwórz Issue (→ e-mail) ===
+            await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: "AUTOMAT – test GitHub Actions",
-              body: "Jeżeli dostajesz tego maila, automat działa poprawnie."
-            })
+              title: `📢 Raport GPW – ${found}`,
+              body:
+                `Link do raportu PDF:\n${pdfUrl}\n\n` +
+                `🧾 Notatka audytorska (wstępna):\n` +
+                `- charakter raportu (bieżący / okresowy)\n` +
+                `- zdarzenia istotne\n` +
+                `- kontynuacja działalności\n`
+            });
