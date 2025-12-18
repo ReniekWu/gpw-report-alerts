@@ -6,34 +6,52 @@ on:
 jobs:
   espi_test:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Test ESPI – wypisz PDF raportów rocznych
+      - name: Test ESPI RSS – bezpieczne pobieranie
         uses: actions/github-script@v7
         with:
           script: |
             const https = require('https');
 
-            const fetch = (url) => new Promise((resolve, reject) => {
-              https.get(url, res => {
+            const fetchSafe = (url) => new Promise((resolve) => {
+              const req = https.get(url, {
+                headers: {
+                  'User-Agent': 'Mozilla/5.0 (compatible; AuditBot/1.0)'
+                },
+                timeout: 15000
+              }, res => {
                 let data = '';
                 res.on('data', c => data += c);
                 res.on('end', () => resolve(data));
-              }).on('error', reject);
+              });
+
+              req.on('error', err => {
+                console.log('Błąd sieci (ignorowany):', err.message);
+                resolve(null);
+              });
+
+              req.on('timeout', () => {
+                console.log('Timeout – połączenie zerwane');
+                req.destroy();
+                resolve(null);
+              });
             });
 
             const espiUrl = 'https://www.gpw.pl/espi-rss';
             console.log('Pobieram ESPI RSS:', espiUrl);
 
-            const xml = await fetch(espiUrl);
+            const xml = await fetchSafe(espiUrl);
+
+            if (!xml) {
+              console.log('Nie udało się pobrać ESPI RSS (blokada serwera)');
+              return;
+            }
+
             const items = xml.split('<item>').slice(1);
 
             for (const item of items) {
-              if (!item.includes('Raport roczny')) continue;
+              if (!item.toLowerCase().includes('raport roczny')) continue;
 
               const pdfs = [...item.matchAll(/https?:\/\/[^<"]+\.pdf/gi)]
                 .map(m => m[0]);
