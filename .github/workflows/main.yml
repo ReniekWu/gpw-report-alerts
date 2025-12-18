@@ -84,18 +84,23 @@ jobs:
                 console.log('Strona szczegółu:', detailLink);
 
                 // =========================
-                // ETAP 2A: ZNAJDŹ ZAŁĄCZNIKI
                 // =========================
-                const detailHtml = await fetchHtml(detailLink);
+                // ETAP 2B.1: RAPORTY ESPI – WYPISZ PDF
+                // =========================
 
-                const attachmentMatches = [...detailHtml.matchAll(/href="([^"]+attachment[^"]+)"/gi)]
-                  .map(m => m[1]);
-
-                if (attachmentMatches.length === 0) {
-                  console.log('Brak załączników');
-                } else {
-                  console.log('Znalezione ZAŁĄCZNIKI:');
-                  attachmentMatches.forEach(a => console.log(a));
+                const espiUrl = 'https://www.gpw.pl/espi-rss';
+                const espiXml = await fetchHtml(espiUrl);
+                const items = espiXml.split('<item>').slice(1);
+                for (const item of items) {
+                  if (!item.includes('Raport roczny')) continue;
+                  if (!item.includes(firma)) continue;
+                  const pdfMatches = [...item.matchAll(/https?:\/\/[^<"]+\.pdf/gi)]
+                    .map(m => m[0]);
+                  if (pdfMatches.length > 0) {
+                    console.log(`\nESPI PDF dla ${firma}:`);
+                    pdfMatches.forEach(p => console.log(p));
+                  }
+                }
                 }
               }
             }
