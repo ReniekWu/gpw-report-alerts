@@ -12,55 +12,90 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Sprawdź raporty GPW i utwórz Issue
-        uses: actions/github-script@v7
-        with:
-          script: |
+- name: Sprawdź RAPORTY ROCZNE (PAP) i utwórz Issue
+  uses: actions/github-script@v7
+  with:
+    script: |
             const fs = require('fs');
+            const https = require('https');
 
-            // === 1. Wczytaj listę spółek z CSV ===
+            // === KONFIGURACJA ===
+            const YEARS_BACK = 2; // ile lat wstecz (0 = tylko bieżący)
+            const BASE_URL = 'https://biznes.pap.pl/espi/periodic/';
+            const STATE_FILE = 'pap_state.json';
+            const TITLE_FILTER = 'Raport roczny';
+
+            // === 1. Wczytaj spółki z CSV (pełne nazwy jak w kolumnie FIRMA) ===
             const csv = fs.readFileSync('spolki.csv', 'utf8');
-            const lines = csv.split('\n').slice(1);
-            const spolki = lines.map(l => l.trim()).filter(Boolean);
+            const companies = csv.split('\n').slice(1).map(l => l.trim()).filter(Boolean);
+            console.log('SPÓŁKI (CSV):', companies);
 
-            console.log('SPÓŁKI Z CSV:', spolki);
+            // === 2. Wczytaj stan (żeby nie dublować) ===
+            let state = {};
+            try { state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch {}
 
-            // === 2. Pobierz stronę GPW ===
-            const res = await fetch('https://www.gpw.pl/komunikaty');
-            const html = await res.text();
-
-            // === 3. Znajdź pierwszy link PDF ===
-            const match = html.match(/href="([^"]+\.pdf)"/);
-            if (!match) {
-              console.log('Brak raportów PDF');
-              return;
-            }
-
-            const pdfUrl = match[1];
-            console.log('Znaleziony PDF:', pdfUrl);
-
-            // === 4. Sprawdź, czy dotyczy spółki z CSV ===
-            const found = spolki.find(s =>
-              pdfUrl.toLowerCase().includes(
-                s.replace(/\s+/g, '').toLowerCase()
-              )
-            );
-
-            if (!found) {
-              console.log('Raport nie dotyczy spółek z listy');
-              return;
-            }
-
-            // === 5. Utwórz Issue (→ e-mail) ===
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `📢 Raport GPW – ${found}`,
-              body:
-                `Link do raportu PDF:\n${pdfUrl}\n\n` +
-                `🧾 Notatka audytorska (wstępna):\n` +
-                `- charakter raportu (bieżący / okresowy)\n` +
-                `- zdarzenia istotne\n` +
-                `- kontynuacja działalności\n`
+            const fetchHtml = (url) => new Promise((resolve, reject) => {
+              https.get(url, res => {
+                let data = '';
+                res.on('data', c => data += c);
+                res.on('end', () => resolve(data));
+              }).on('error', reject);
             });
+
+            const currentYear = new Date().getFullYear();
+            const years = Array.from({length: YEARS_BACK + 1}, (_, i) => currentYear - i);
+            console.log('LATA DO SPRAWDZENIA:', years);
+
+            for (const year of years) {
+              const url = `${BASE_URL}${year}`;
+              console.log('Pobieram:', url);
+              const html = await fetchHtml(url);
+
+              // Każdy wiersz tabeli (uprościłem do bezpiecznego regexu)
+              const rows = html.split('<tr').slice(1);
+
+              for (const row of rows) {
+                // FIRMA
+                const firmaMatch = row.match(/<td[^>]*>\s*([^<]+)\s*<\/td>/);
+                if (!firmaMatch) continue;
+                const firma = firmaMatch[1].trim();
+
+                // TYTUŁ
+                const tytulMatch = row.match(/<td[^>]*>[\s\S]*?<\/td>\s*<td[^>]*>\s*([^<]+)\s*<\/td>/);
+                const tytul = tytulMatch ? tytulMatch[1].trim() : '';
+                if (!tytul.includes(TITLE_FILTER)) continue;
+
+                // Link do szczegółu
+                const linkMatch = row.match(/href="([^"]+)"/);
+                if (!linkMatch) continue;
+                const detailLink = linkMatch[1];
+
+                // Spółka musi być w CSV (pełna nazwa)
+                if (!companies.includes(firma)) continue;
+
+                const key = `${year}|${firma}|${tytul}`;
+                if (state[key]) continue; // już obsłużony
+
+                // === 3. Issue + e-mail ===
+                await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title: `📊 Raport roczny – ${firma} (${year})`,
+                  body:
+                    `**FIRMA:** ${firma}\n` +
+                    `**TYTUŁ:** ${tytul}\n` +
+                    `**Rok:** ${year}\n\n` +
+                    `Link do publikacji PAP:\n${detailLink}\n\n` +
+                    `🧾 Checklist audytorska:\n` +
+                    `- kompletność sprawozdania\n` +
+                    `- zgodność z UoR/IFRS\n` +
+                    `- kontynuacja działalności\n` +
+                    `- zdarzenia po dniu bilansowym\n`
+                });
+
+                state[key] = true;
+                console.log('Utworzono Issue:', key);
+              }
+            }
+
+            fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
