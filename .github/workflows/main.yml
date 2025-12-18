@@ -12,71 +12,108 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-- name: Sprawdź RAPORTY ROCZNE (PAP) i utwórz Issue
-  uses: actions/github-script@v7
-  with:
-    script: |
+
+      - name: Sprawdź RAPORTY ROCZNE (PAP) i utwórz Issue
+        uses: actions/github-script@v7
+        with:
+          script: |
             const fs = require('fs');
             const https = require('https');
 
-            // === KONFIGURACJA ===
-            const YEARS_BACK = 2; // ile lat wstecz (0 = tylko bieżący)
+            // =========================
+            // KONFIGURACJA
+            // =========================
             const BASE_URL = 'https://biznes.pap.pl/espi/periodic/';
-            const STATE_FILE = 'pap_state.json';
+            const YEARS_BACK = 2; // 0 = tylko bieżący rok, 1 = +1 wstecz itd.
             const TITLE_FILTER = 'Raport roczny';
+            const STATE_FILE = 'pap_state.json';
 
-            // === 1. Wczytaj spółki z CSV (pełne nazwy jak w kolumnie FIRMA) ===
+            // =========================
+            // 1. WCZYTAJ SPÓŁKI Z CSV
+            // =========================
+            if (!fs.existsSync('spolki.csv')) {
+              throw new Error('Brak pliku spolki.csv w głównym repozytorium');
+            }
+
             const csv = fs.readFileSync('spolki.csv', 'utf8');
-            const companies = csv.split('\n').slice(1).map(l => l.trim()).filter(Boolean);
-            console.log('SPÓŁKI (CSV):', companies);
+            const companies = csv
+              .split('\n')
+              .slice(1)
+              .map(l => l.trim())
+              .filter(Boolean);
 
-            // === 2. Wczytaj stan (żeby nie dublować) ===
+            console.log('SPÓŁKI Z CSV:', companies);
+
+            // =========================
+            // 2. WCZYTAJ STAN (ANTI-DUPLIKAT)
+            // =========================
             let state = {};
-            try { state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch {}
+            if (fs.existsSync(STATE_FILE)) {
+              state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+            }
 
+            // =========================
+            // FUNKCJA POBIERANIA HTML
+            // =========================
             const fetchHtml = (url) => new Promise((resolve, reject) => {
               https.get(url, res => {
                 let data = '';
-                res.on('data', c => data += c);
+                res.on('data', chunk => data += chunk);
                 res.on('end', () => resolve(data));
               }).on('error', reject);
             });
 
+            // =========================
+            // 3. ITERACJA PO LATACH
+            // =========================
             const currentYear = new Date().getFullYear();
-            const years = Array.from({length: YEARS_BACK + 1}, (_, i) => currentYear - i);
-            console.log('LATA DO SPRAWDZENIA:', years);
+            const years = Array.from(
+              { length: YEARS_BACK + 1 },
+              (_, i) => currentYear - i
+            );
+
+            console.log('SPRAWDZANE LATA:', years);
 
             for (const year of years) {
               const url = `${BASE_URL}${year}`;
               console.log('Pobieram:', url);
+
               const html = await fetchHtml(url);
 
-              // Każdy wiersz tabeli (uprościłem do bezpiecznego regexu)
+              // =========================
+              // 4. PARSOWANIE WIERSZY TABELI
+              // =========================
               const rows = html.split('<tr').slice(1);
 
               for (const row of rows) {
-                // FIRMA
+
+                // FIRMA (1 kolumna)
                 const firmaMatch = row.match(/<td[^>]*>\s*([^<]+)\s*<\/td>/);
                 if (!firmaMatch) continue;
                 const firma = firmaMatch[1].trim();
 
-                // TYTUŁ
-                const tytulMatch = row.match(/<td[^>]*>[\s\S]*?<\/td>\s*<td[^>]*>\s*([^<]+)\s*<\/td>/);
-                const tytul = tytulMatch ? tytulMatch[1].trim() : '';
-                if (!tytul.includes(TITLE_FILTER)) continue;
+                // TYTUŁ (3 kolumna – uproszczone, ale stabilne)
+                const tytulMatch = row.match(/Raport roczny[^<]*/);
+                if (!tytulMatch) continue;
+                const tytul = tytulMatch[0].trim();
 
                 // Link do szczegółu
                 const linkMatch = row.match(/href="([^"]+)"/);
                 if (!linkMatch) continue;
                 const detailLink = linkMatch[1];
 
-                // Spółka musi być w CSV (pełna nazwa)
+                // =========================
+                // 5. FILTRY BIZNESOWE
+                // =========================
                 if (!companies.includes(firma)) continue;
+                if (!tytul.includes(TITLE_FILTER)) continue;
 
                 const key = `${year}|${firma}|${tytul}`;
-                if (state[key]) continue; // już obsłużony
+                if (state[key]) continue;
 
-                // === 3. Issue + e-mail ===
+                // =========================
+                // 6. ISSUE + E-MAIL
+                // =========================
                 await github.rest.issues.create({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -84,18 +121,21 @@ jobs:
                   body:
                     `**FIRMA:** ${firma}\n` +
                     `**TYTUŁ:** ${tytul}\n` +
-                    `**Rok:** ${year}\n\n` +
-                    `Link do publikacji PAP:\n${detailLink}\n\n` +
+                    `**ROK:** ${year}\n\n` +
+                    `🔗 Link do publikacji PAP:\n${detailLink}\n\n` +
                     `🧾 Checklist audytorska:\n` +
                     `- kompletność sprawozdania\n` +
-                    `- zgodność z UoR/IFRS\n` +
+                    `- zgodność z UoR / IFRS\n` +
                     `- kontynuacja działalności\n` +
                     `- zdarzenia po dniu bilansowym\n`
                 });
 
                 state[key] = true;
-                console.log('Utworzono Issue:', key);
+                console.log('UTWORZONO ISSUE:', key);
               }
             }
 
+            // =========================
+            // 7. ZAPIS STANU
+            // =========================
             fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
