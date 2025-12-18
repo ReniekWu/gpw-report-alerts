@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Sprawdź RAPORTY ROCZNE (PAP) i utwórz Issue
+      - name: Sprawdź RAPORTY ROCZNE (PAP) i wypisz ZAŁĄCZNIKI
         uses: actions/github-script@v7
         with:
           script: |
@@ -24,17 +24,12 @@ jobs:
             // KONFIGURACJA
             // =========================
             const BASE_URL = 'https://biznes.pap.pl/espi/periodic/';
-            const YEARS_BACK = 2; // 0 = tylko bieżący rok, 1 = +1 wstecz itd.
+            const YEARS_BACK = 2;
             const TITLE_FILTER = 'Raport roczny';
-            const STATE_FILE = 'pap_state.json';
 
             // =========================
             // 1. WCZYTAJ SPÓŁKI Z CSV
             // =========================
-            if (!fs.existsSync('spolki.csv')) {
-              throw new Error('Brak pliku spolki.csv w głównym repozytorium');
-            }
-
             const csv = fs.readFileSync('spolki.csv', 'utf8');
             const companies = csv
               .split('\n')
@@ -43,14 +38,6 @@ jobs:
               .filter(Boolean);
 
             console.log('SPÓŁKI Z CSV:', companies);
-
-            // =========================
-            // 2. WCZYTAJ STAN (ANTI-DUPLIKAT)
-            // =========================
-            let state = {};
-            if (fs.existsSync(STATE_FILE)) {
-              state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-            }
 
             // =========================
             // FUNKCJA POBIERANIA HTML
@@ -64,107 +51,51 @@ jobs:
             });
 
             // =========================
-            // 3. ITERACJA PO LATACH
+            // 2. ITERACJA PO LATACH
             // =========================
             const currentYear = new Date().getFullYear();
-            const years = Array.from(
-              { length: YEARS_BACK + 1 },
-              (_, i) => currentYear - i
-            );
-
-            console.log('SPRAWDZANE LATA:', years);
+            const years = Array.from({ length: YEARS_BACK + 1 }, (_, i) => currentYear - i);
 
             for (const year of years) {
               const url = `${BASE_URL}${year}`;
               console.log('Pobieram:', url);
 
               const html = await fetchHtml(url);
-
-              // =========================
-              // 4. PARSOWANIE WIERSZY TABELI
-              // =========================
               const rows = html.split('<tr').slice(1);
 
               for (const row of rows) {
 
-                // FIRMA (1 kolumna)
+                // FIRMA
                 const firmaMatch = row.match(/<td[^>]*>\s*([^<]+)\s*<\/td>/);
                 if (!firmaMatch) continue;
                 const firma = firmaMatch[1].trim();
 
-                // TYTUŁ (3 kolumna – uproszczone, ale stabilne)
-                const tytulMatch = row.match(/Raport roczny[^<]*/);
-                if (!tytulMatch) continue;
-                const tytul = tytulMatch[0].trim();
+                // TYTUŁ
+                if (!row.includes(TITLE_FILTER)) continue;
 
-                // Link do szczegółu
+                // LINK DO SZCZEGÓŁU
                 const linkMatch = row.match(/href="([^"]+)"/);
                 if (!linkMatch) continue;
                 const detailLink = linkMatch[1];
+
+                if (!companies.includes(firma)) continue;
+
+                console.log(`\nRAPORT: ${firma} (${year})`);
+                console.log('Strona szczegółu:', detailLink);
+
                 // =========================
-                // ETAP 2A (POPRAWIONY): ZNAJDŹ ZAŁĄCZNIKI
+                // ETAP 2A: ZNAJDŹ ZAŁĄCZNIKI
                 // =========================
                 const detailHtml = await fetchHtml(detailLink);
-                // Szukamy linków do załączników (nie PDF!)
+
                 const attachmentMatches = [...detailHtml.matchAll(/href="([^"]+attachment[^"]+)"/gi)]
                   .map(m => m[1]);
 
                 if (attachmentMatches.length === 0) {
-                  console.log(`Brak załączników dla: ${firma} (${year})`);
+                  console.log('Brak załączników');
                 } else {
-                  console.log(`Znalezione ZAŁĄCZNIKI dla ${firma} (${year}):`);
-                  attachmentMatches.forEach(a => console.log('ZAŁĄCZNIK:', a));
+                  console.log('Znalezione ZAŁĄCZNIKI:');
+                  attachmentMatches.forEach(a => console.log(a));
                 }
-                // =========================
-                // ETAP 2A: POBIERZ STRONĘ SZCZEGÓŁU I ZNAJDŹ PDF-Y
-                // =========================
-                const detailHtml = await fetchHtml(detailLink);
-
-                // Znajdź wszystkie linki do PDF
-                const pdfMatches = [...detailHtml.matchAll(/href="([^"]+\.pdf)"/gi)]
-                  .map(m => m[1]);
-
-                if (pdfMatches.length === 0) {
-                  console.log(`Brak PDF dla: ${firma} (${year})`);
-                } else {
-                  console.log(`Znalezione PDF dla ${firma} (${year}):`);
-                  pdfMatches.forEach(p => console.log('PDF:', p));
-                }
-
-                // =========================
-                // 5. FILTRY BIZNESOWE
-                // =========================
-                if (!companies.includes(firma)) continue;
-                if (!tytul.includes(TITLE_FILTER)) continue;
-
-                const key = `${year}|${firma}|${tytul}`;
-                if (state[key]) continue;
-
-                // =========================
-                // 6. ISSUE + E-MAIL
-                // =========================
-                await github.rest.issues.create({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  title: `📊 Raport roczny – ${firma} (${year})`,
-                  body:
-                    `**FIRMA:** ${firma}\n` +
-                    `**TYTUŁ:** ${tytul}\n` +
-                    `**ROK:** ${year}\n\n` +
-                    `🔗 Link do publikacji PAP:\n${detailLink}\n\n` +
-                    `🧾 Checklist audytorska:\n` +
-                    `- kompletność sprawozdania\n` +
-                    `- zgodność z UoR / IFRS\n` +
-                    `- kontynuacja działalności\n` +
-                    `- zdarzenia po dniu bilansowym\n`
-                });
-
-                state[key] = true;
-                console.log('UTWORZONO ISSUE:', key);
               }
             }
-
-            // =========================
-            // 7. ZAPIS STANU
-            // =========================
-            fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
