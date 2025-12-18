@@ -102,6 +102,20 @@ jobs:
                 if (!linkMatch) continue;
                 const detailLink = linkMatch[1];
                 // =========================
+                // ETAP 2A (POPRAWIONY): ZNAJDŹ ZAŁĄCZNIKI
+                // =========================
+                const detailHtml = await fetchHtml(detailLink);
+                // Szukamy linków do załączników (nie PDF!)
+                const attachmentMatches = [...detailHtml.matchAll(/href="([^"]+attachment[^"]+)"/gi)]
+                  .map(m => m[1]);
+
+                if (attachmentMatches.length === 0) {
+                  console.log(`Brak załączników dla: ${firma} (${year})`);
+                } else {
+                  console.log(`Znalezione ZAŁĄCZNIKI dla ${firma} (${year}):`);
+                  attachmentMatches.forEach(a => console.log('ZAŁĄCZNIK:', a));
+                }
+                // =========================
                 // ETAP 2A: POBIERZ STRONĘ SZCZEGÓŁU I ZNAJDŹ PDF-Y
                 // =========================
                 const detailHtml = await fetchHtml(detailLink);
