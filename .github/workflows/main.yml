@@ -4,103 +4,42 @@ on:
   workflow_dispatch:
 
 jobs:
-  check:
+  espi_test:
     runs-on: ubuntu-latest
     permissions:
-      issues: write
       contents: read
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Sprawdź RAPORTY ROCZNE (PAP) i wypisz ZAŁĄCZNIKI
+      - name: Test ESPI – wypisz PDF raportów rocznych
         uses: actions/github-script@v7
         with:
           script: |
-            const fs = require('fs');
             const https = require('https');
 
-            // =========================
-            // KONFIGURACJA
-            // =========================
-            const BASE_URL = 'https://biznes.pap.pl/espi/periodic/';
-            const YEARS_BACK = 2;
-            const TITLE_FILTER = 'Raport roczny';
-
-            // =========================
-            // 1. WCZYTAJ SPÓŁKI Z CSV
-            // =========================
-            const csv = fs.readFileSync('spolki.csv', 'utf8');
-            const companies = csv
-              .split('\n')
-              .slice(1)
-              .map(l => l.trim())
-              .filter(Boolean);
-
-            console.log('SPÓŁKI Z CSV:', companies);
-
-            // =========================
-            // FUNKCJA POBIERANIA HTML
-            // =========================
-            const fetchHtml = (url) => new Promise((resolve, reject) => {
+            const fetch = (url) => new Promise((resolve, reject) => {
               https.get(url, res => {
                 let data = '';
-                res.on('data', chunk => data += chunk);
+                res.on('data', c => data += c);
                 res.on('end', () => resolve(data));
               }).on('error', reject);
             });
 
-            // =========================
-            // 2. ITERACJA PO LATACH
-            // =========================
-            const currentYear = new Date().getFullYear();
-            const years = Array.from({ length: YEARS_BACK + 1 }, (_, i) => currentYear - i);
+            const espiUrl = 'https://www.gpw.pl/espi-rss';
+            console.log('Pobieram ESPI RSS:', espiUrl);
 
-            for (const year of years) {
-              const url = `${BASE_URL}${year}`;
-              console.log('Pobieram:', url);
+            const xml = await fetch(espiUrl);
+            const items = xml.split('<item>').slice(1);
 
-              const html = await fetchHtml(url);
-              const rows = html.split('<tr').slice(1);
+            for (const item of items) {
+              if (!item.includes('Raport roczny')) continue;
 
-              for (const row of rows) {
+              const pdfs = [...item.matchAll(/https?:\/\/[^<"]+\.pdf/gi)]
+                .map(m => m[0]);
 
-                // FIRMA
-                const firmaMatch = row.match(/<td[^>]*>\s*([^<]+)\s*<\/td>/);
-                if (!firmaMatch) continue;
-                const firma = firmaMatch[1].trim();
-
-                // TYTUŁ
-                if (!row.includes(TITLE_FILTER)) continue;
-
-                // LINK DO SZCZEGÓŁU
-                const linkMatch = row.match(/href="([^"]+)"/);
-                if (!linkMatch) continue;
-                const detailLink = linkMatch[1];
-
-                if (!companies.includes(firma)) continue;
-
-                console.log(`\nRAPORT: ${firma} (${year})`);
-                console.log('Strona szczegółu:', detailLink);
-
-                // =========================
-                // =========================
-                // ETAP 2B.1: RAPORTY ESPI – WYPISZ PDF
-                // =========================
-
-                const espiUrl = 'https://www.gpw.pl/espi-rss';
-                const espiXml = await fetchHtml(espiUrl);
-                const items = espiXml.split('<item>').slice(1);
-                for (const item of items) {
-                  if (!item.includes('Raport roczny')) continue;
-                  if (!item.includes(firma)) continue;
-                  const pdfMatches = [...item.matchAll(/https?:\/\/[^<"]+\.pdf/gi)]
-                    .map(m => m[0]);
-                  if (pdfMatches.length > 0) {
-                    console.log(`\nESPI PDF dla ${firma}:`);
-                    pdfMatches.forEach(p => console.log(p));
-                  }
-                }
-                }
+              if (pdfs.length > 0) {
+                console.log('\nZnaleziono PDF:');
+                pdfs.forEach(p => console.log(p));
               }
             }
