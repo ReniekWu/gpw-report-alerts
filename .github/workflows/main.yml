@@ -101,6 +101,21 @@ jobs:
                 const linkMatch = row.match(/href="([^"]+)"/);
                 if (!linkMatch) continue;
                 const detailLink = linkMatch[1];
+                // =========================
+                // ETAP 2A: POBIERZ STRONĘ SZCZEGÓŁU I ZNAJDŹ PDF-Y
+                // =========================
+                const detailHtml = await fetchHtml(detailLink);
+
+                // Znajdź wszystkie linki do PDF
+                const pdfMatches = [...detailHtml.matchAll(/href="([^"]+\.pdf)"/gi)]
+                  .map(m => m[1]);
+
+                if (pdfMatches.length === 0) {
+                  console.log(`Brak PDF dla: ${firma} (${year})`);
+                } else {
+                  console.log(`Znalezione PDF dla ${firma} (${year}):`);
+                  pdfMatches.forEach(p => console.log('PDF:', p));
+                }
 
                 // =========================
                 // 5. FILTRY BIZNESOWE
